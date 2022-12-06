@@ -1,0 +1,399 @@
+---
+title: "Analisis sentimen dari dampak kebijakan pemberian bantuan sosial di Indonesia menggunakan scripping twitter dengan metode naive bayes"
+author: "Helma Liana Putri , Danica Kirana"
+date: "2022-11-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Deklarasilibrary**
+
+```{r rlib}
+library(tm) #data cleaning (corpus)
+library(tidytext)
+library(twitteR) #akses twitter APIs
+library(rtweet) #collect and organize twitter data
+library(shiny) #shiny
+library(syuzhet) #baca fungsi get_nrc
+library(wordcloud) #wordcloud
+library(vroom) #load dataset
+library(here) #menyimpan dataset
+library(dplyr) #manipulasi data frame
+library(ggplot2) #visualisasi data (barplot, grafik)
+library(RColorBrewer) #pengaturan warna
+library(RTextTools) #buat naive bayes
+library(devtools)
+```
+
+**Access twitter API**
+
+```{r}
+# Key auth Twitter API
+consumer.api_key <- "bYPNq9oD4EQAS635OflQwPoxj"
+consumer.api_secret_key <- "JKFnRsof4m02H4fHoaU1I9I1qo8ssF9LQeNNgDDhkVJpcgzix8"
+access.token <- "1168785141507842048-cEacBdvnfW6qwpvTx29PKH0AygxmZf"
+access.token_secret <- "q8hBnzgwL1rc24l7z1idDHdAyzb2tep8K3kGb5YuBRIXl"
+  
+# Start authentication with OAuth
+setup_twitter_oauth(consumer.api_key, consumer.api_secret_key, access.token, access.token_secret)
+
+```
+
+**Twitter Scrapping**
+
+```{r}
+tweets = searchTwitter('Bansos', 
+                               n = 1000,
+                               lang = "id",
+                               retryOnRateLimit = 10e5)
+text <- do.call("rbind", lapply(tweets, as.data.frame))
+write.csv(text, file = 'dataMentah.csv')
+```
+
+**Cleaning Data**
+
+```{r}
+d <- read.csv("dataMentah.csv")
+kata <- d$text
+reviewC <- Corpus(VectorSource(kata))
+#remove URL
+removeURL <- function(x) gsub("http[^[:space:]]*", "", x)
+reviewclean <- tm_map(reviewC, removeURL)
+#remove New Line
+removeNL <- function(y) gsub("\n", " ", y)
+reviewclean <- tm_map(reviewclean, removeNL)
+#remove koma
+replacecomma <- function(y) gsub(",", "", y)
+reviewclean <- tm_map(reviewclean, replacecomma)
+#remove retweet
+removeRT <- function(y) gsub("RT ", "", y)
+reviewclean <- tm_map(reviewclean, removeRT)
+#remove titik dua
+removetitik2 <- function(y) gsub(":", "", y)
+reviewclean <- tm_map(reviewclean, removetitik2)
+#remove titik koma
+removetitikkoma <- function(y) gsub(";", " ", y)
+reviewclean <- tm_map(reviewclean, removetitikkoma)
+#remove titik3
+removetitik3 <- function(y) gsub("p…", "", y)
+reviewclean <- tm_map(reviewclean, removetitik3)
+#remove &amp
+removeamp <- function(y) gsub("&amp;", "", y)
+reviewclean <- tm_map(reviewclean, removeamp)
+#remove Mention
+removeUN <- function(z) gsub("@\\w+", "", z)
+reviewclean <- tm_map(reviewclean, removeUN)
+
+removesym <- function(y) gsub("ð", "", y)
+reviewclean <- tm_map(reviewclean, removesym)
+
+#remove Emoji
+removeEmoji <- function(z) gsub("[^\x01-\x7F]", "", z)
+reviewclean <- tm_map(reviewclean, removeEmoji)
+#remove Number
+removeNum <- function(z) gsub("[0-9]+", "", z)
+reviewclean <- tm_map(reviewclean, removeNum)
+#remove space dll
+remove.all <- function(xy) gsub("[^[:alpha:][:space:]]*", "", xy)
+
+reviewclean <- tm_map(reviewclean,remove.all)
+reviewclean <- tm_map(reviewclean, removePunctuation) #tanda baca
+reviewclean <- tm_map(reviewclean, tolower) #mengubah huruf kecil
+
+#hapus data yang kosong
+try.error = function(x)
+{
+  # create missing value
+  y = NA
+  # tryCatch error
+  try_error = tryCatch(tolower(x), error=function(e) e)
+  # if not an error
+  if (!inherits(try_error, "error"))
+    y = tolower(x)
+  # result
+  return(y)
+}
+
+# lower case using try and error with sapply 
+reviewclean = sapply(reviewclean, try.error)
+
+# remove NAs in some_txt
+reviewclean = reviewclean[!is.na(reviewclean)]
+names(reviewclean) = NULL
+
+dataframe<-data.frame(text=unlist(sapply(reviewclean, `[`)), stringsAsFactors=F)
+write.csv(dataframe,file = "data_clean.csv")
+View(dataframe)
+```
+
+**Scoring**
+
+```{r}
+try_clean <- read.csv('data_clean.csv')
+View(try_clean)
+
+#skoring
+kata.positif <- scan("positive-words.txt",what="character",comment.char=";")
+kata.negatif <- scan("negative-words.txt",what="character",comment.char=";")
+score.sentiment = function(sentence, positif, negatif,
+                           .progress='none')
+{
+  require(plyr)
+  require(stringr) 
+  #prepocessing
+  scores = laply(sentence, function(kalimat, positif,
+                                    negatif) {
+    kalimat = gsub('[[:punct:]]', '', kalimat)
+    kalimat = gsub('[[:cntrl:]]', '', kalimat)
+    kalimat = gsub('\\d+', '', kalimat)
+    kalimat = tolower(kalimat)
+    list.kata = str_split(kalimat, '\\s+')
+    kata2 = unlist(list.kata)
+    positif.matches = match(kata2, kata.positif)
+    negatif.matches = match(kata2, kata.negatif)
+    positif.matches = !is.na(positif.matches)
+    negatif.matches = !is.na(negatif.matches)
+    score = sum(positif.matches) - (sum(negatif.matches))
+    return(score)
+  }, kata.positif, kata.negatif, .progress=.progress )
+  
+  scores.df = data.frame(score=scores, text=sentence)
+  return(scores.df)}
+
+hasil = score.sentiment(try_clean$text, kata.positif, kata.negatif)
+
+#konversi score ke sentiment
+hasil$klasifikasi<- ifelse(hasil$score<0, "Negatif",ifelse(hasil$score==0,"Netral","Positif"))
+hasil$klasifikasi
+View(hasil)
+
+#menukar urtan baris
+data <- hasil[c(3,1,2)] #ubah urutan kolom
+View(data)
+write.csv(data, file = "dataLabel.csv")
+```
+
+**Barplot Lexicon**
+
+```{r}
+library(e1071) #library yang terdapat sebuah algoritma naivebayes
+library(caret) #library yang terdapat sebuah algoritma naivebayes
+
+d<-read.csv("data_clean.csv",stringsAsFactors = FALSE) #membaca file csv yang sudah di cleaning data
+
+review <-as.character(d$text) #set variabel cloumn text menjadi char
+get_nrc_sentiment('happy')
+get_nrc_sentiment('excitement')
+#deklarasi var s utnuk memanggil sentimen dictionary untuk menghitung presentasi dari beberapa emotion dan mengubahnya ke dalam text file
+s <- get_nrc_sentiment(review, cl = NULL, language = "english", lowercase = TRUE)
+
+review_combine<-cbind(d$text,s) #klasifikasi data
+par(mar=rep(3,4))
+a<- barplot(colSums(s),col=rainbow(10), xlab ='emotion', ylab='count',main='Sentiment Analysis')
+barplt <- a
+```
+
+*Naive Bayes*
+
+```{r}
+require(corpus)
+
+data.frame <- read.csv("dataLabel.csv",stringsAsFactors = F)
+data.frame$klasifikasi <- factor(data.frame$klasifikasi)
+glimpse(data.frame)
+set.seed(20)
+data.frame<-data.frame[sample(nrow(data.frame)),]
+data.frame<-data.frame[sample(nrow(data.frame)),]
+glimpse(data.frame)
+corpus<-Corpus(VectorSource(data.frame$text))
+corpus
+inspect(corpus[1:10])
+
+#fungsinya untuk membersihkan data data yang tidak dibutuhkan 
+
+corpus.clean<-corpus %>%
+  tm_map(content_transformer(tolower)) %>% #digunakan untuk mengubah huruf besar dari string menjadi string huruf kecil
+  tm_map(removePunctuation)%>% #menghapus tanda baca
+  tm_map(removeNumbers)%>% #menghapus nomor
+  tm_map(removeWords,stopwords(kind="en"))%>% #menghapus stopwords
+  tm_map(stripWhitespace) 
+dtm<-DocumentTermMatrix(corpus.clean)
+inspect(dtm[1:10,1:20])
+
+df.train<-data.frame[1:800,,]
+df.test<-data.frame[801:1000,]   
+
+dtm.train<-dtm[1:800,]
+dtm.test<-dtm[801:1000,]
+
+corpus.clean.train<-corpus.clean[1:800]
+corpus.clean.test<-corpus.clean[801:1000]
+
+dim(dtm.train)
+
+fivefreq<-findFreqTerms(dtm.train,5)
+length(fivefreq)
+
+dtm.train.nb<-DocumentTermMatrix(corpus.clean.train,control = list(dictionary=fivefreq))
+dim(dtm.train.nb)
+
+dtm.test.nb<-DocumentTermMatrix(corpus.clean.test,control = list(dictionary=fivefreq))
+dim(dtm.test.nb)
+
+#Boolan Naive Bayes
+convert_count <- function(x){
+    y<-ifelse(x>0,1,0)
+    y<-factor(y,levels=c(0,1),labels=c("no","yes"))
+    y
+}
+
+#Naive Bayes Model
+trainNB<-apply(dtm.train.nb,2,convert_count)
+testNB<-apply(dtm.test.nb,2,convert_count)
+#Training
+classifier <- naiveBayes(trainNB, df.train$klasifikasi, laplace = 1)
+
+#Use the NB classifier we built to make predictions on the test set
+pred <- predict(classifier, testNB)
+
+#Create a truth table by tabulating the predicted class labels with the actual predicted class labels with the actual class labels
+NB_table=table("Prediction"= pred, "Actual" = df.test$klasifikasi)
+NB_table
+
+#confussion Matrix
+conf.matNB <- confusionMatrix(pred, df.test$klasifikasi)
+conf.matNB
+
+```
+
+**Worclouds**
+
+```{r}
+library(dplyr)
+library(wordcloud2)
+
+data1 <- read.csv('dataLabel.csv')
+text <- data1$text
+docs <- Corpus(VectorSource(text))
+  docs <- tm_map(docs, removeWords,"nya")
+  docs <- tm_map(docs, removeWords,"untuk")
+  docs <- tm_map(docs, removeWords,"gak")
+  docs <- tm_map(docs, removeWords,"ðÿ")
+  docs <- tm_map(docs, removeWords,"amp")
+  docs <- tm_map(docs, removeWords,"dan")
+  docs <- tm_map(docs, removeWords,"gerai")
+  docs <- tm_map(docs, removeWords,"yang")
+  docs <- tm_map(docs, removeWords,"dari")
+dtm <- TermDocumentMatrix(docs) 
+matrix <- as.matrix(dtm) 
+words <- sort(rowSums(matrix),decreasing=TRUE) 
+df <- data.frame(word = names(words),freq=words)
+df
+tweets_words <-  data1 %>%
+  select(text) %>%
+  unnest_tokens(word, text)
+
+words <- tweets_words %>% dplyr::count(word, sort=TRUE)
+
+p <- wordcloud2(data=df, size=1.5, color='random-dark')
+p
+```
+
+**Histogram Frequency**
+
+```{r Freq}
+data1 = read.csv("dataLabel.csv")
+corpus = Corpus(VectorSource(data1$text))
+  corpus <- tm_map(corpus, removeWords,"nya")
+  corpus <- tm_map(corpus, removeWords,"untuk")
+  corpus <- tm_map(corpus, removeWords,"gak")
+  corpus <- tm_map(corpus, removeWords,"ðÿ")
+  corpus <- tm_map(corpus, removeWords,"amp")
+  corpus <- tm_map(corpus, removeWords,"dan")
+  corpus <- tm_map(corpus, removeWords,"gerai")
+  corpus <- tm_map(corpus, removeWords,"yang")
+  corpus <- tm_map(corpus, removeWords,"dari")
+dtm <- TermDocumentMatrix(corpus)
+m <- as.matrix(dtm)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+barplot(d[1:20,]$freq, las = 2, names.arg = d[1:20,]$word, col=rainbow(5),
+      main = "Kata Paling Sering Muncul", ylab = "Frekuensi")
+```
+
+**User Interface**
+
+```{r}
+#shiny
+#membuka file csv
+dataLabel<- read.csv("datalabel.csv")
+dataKotor <- read.csv("dataMentah.csv")
+
+#mengatur tampilan web
+ui <- fluidPage(
+   titlePanel("Analisis sentimen dari dampak kebijakan pemberian bantuan sosial di Indonesia menggunakan scripping twitter dengan metode Naive Bayes"), #judul
+    # Show a plot of the generated distribution
+   mainPanel(#tab
+    #plot output : untuk scatterplot
+            tabsetPanel(type = "tabs",
+                         tabPanel("Term Document Matrix and Statistic", verbatimTextOutput("result")),
+                        #tab data kotor dan hasil sentiment
+                        tabPanel("Data Kotor", DT::dataTableOutput('tbl1')),
+                        tabPanel("Data sentiment", DT::dataTableOutput('tbl2')),
+                        #tab scatterplot/grafik
+                        tabPanel("Histogram", plotOutput("scatterplot")), 
+                        tabPanel("Frequency", plotOutput("freqplot")), 
+                        # tab wordcloud
+                        tabPanel("Wordcloud", wordcloud2Output("Wordcloud2")),
+            )
+   )
+    
+)
+```
+
+**Server**
+
+```{r global}
+#tempat data akan dianalisis dan diproses, hasilnya ditampilkan/diplotkan pada bagian mainpanel() ui
+server <- function(input, output) {
+  #output Data
+  output$result <-renderPrint({
+      conf.matNB
+  })
+  #data ditampilkan dalam beberapa halaman
+  output$tbl1 = DT::renderDataTable({
+        DT::datatable(dataKotor, options = list(lengthChange = FALSE))
+  })
+
+  output$tbl2 = DT::renderDataTable({
+        DT::datatable(dataLabel, options = list(lengthChange = FALSE))
+  })
+  
+  #barplot
+  output$scatterplot <- renderPlot({
+    barplot(colSums(s), col=rainbow(10), ylab='count',main='Sentiment Analysis')
+  }, height = 400)
+  
+  #freq Plot
+  output$freqplot <- renderPlot({
+    barplot(d[1:20,]$freq, las = 2, names.arg = d[1:20,]$word, col=rainbow(5),
+        main = "Kata Paling Sering Muncul", ylab = "Frekuensi")
+  }, height = 400)
+  
+ #wordcloud
+  #wordcloud
+  output$Wordcloud2 <- renderWordcloud2({
+    p
+  })
+}
+```
+
+
+**Running Shiny**
+
+```{r}
+shinyApp(ui = ui, server = server)
+```
